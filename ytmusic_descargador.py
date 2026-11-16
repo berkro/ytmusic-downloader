@@ -97,6 +97,8 @@ TIPOS_BUSQUEDA = {
 }
 
 URL_RE = re.compile(r"^https?://", re.I)
+PRIMERA_TANDA = 40      # resultados que se muestran al instante
+MAX_RESULTADOS = 1000   # tope de seguridad; normalmente YT Music se acaba antes
 
 
 # ----------------------------------------------------------------- utilidades
@@ -197,6 +199,11 @@ def incrustar_portada(ruta: str, jpeg: bytes) -> bool:
     else:
         return False
     return True
+
+
+def clave_fila(f: dict) -> str:
+    d = f["datos"]
+    return d.get("url") or d.get("browseId") or repr(f["fila"])
 
 
 def con_id(artistas) -> list:
@@ -392,6 +399,7 @@ class App(tk.Tk):
         self.historial = []           # vistas anteriores para «Volver»
         self.vista = None             # (título, filas) de lo que se ve ahora
         self.navegando = False
+        self.busqueda = None          # (generación, filas) de la última búsqueda
         self.pool_miniaturas = ThreadPoolExecutor(max_workers=6)
         self.cola_ui = queue.Queue()
         self.cola_descargas = queue.Queue()
@@ -579,6 +587,8 @@ class App(tk.Tk):
                     self.var_estado.set(dato)
                 elif tipo == "progreso":
                     self.progreso["value"] = dato
+                elif tipo == "mas_resultados":
+                    self._anadir_resultados(*dato)
                 elif tipo == "resultados":
                     self._mostrar_resultados(*dato)
                 elif tipo == "miniatura":
@@ -635,11 +645,26 @@ class App(tk.Tk):
             ytm = self._get_ytm()
             if filtro == "canal":
                 filas = self._playlists_de_canal(ytm, texto)
-            else:
-                filas = [f for f in (self._normalizar(r, filtro)
-                                     for r in ytm.search(texto, filter=filtro, limit=30)) if f]
+                self.enviar("resultados", (gen, filas, f"Resultados de «{texto}»", False))
+                self.enviar("estado", f"{len(filas)} resultados." if filas else "Sin resultados.")
+                return
+            # 1) primera tanda rápida para no hacer esperar
+            filas = [f for f in (self._normalizar(r, filtro)
+                                 for r in ytm.search(texto, filter=filtro, limit=PRIMERA_TANDA)) if f]
             self.enviar("resultados", (gen, filas, f"Resultados de «{texto}»", False))
-            self.enviar("estado", f"{len(filas)} resultados." if filas else "Sin resultados.")
+            if len(filas) < PRIMERA_TANDA:  # ya no hay más
+                self.enviar("estado", f"{len(filas)} resultados." if filas else "Sin resultados.")
+                return
+            # 2) el resto en segundo plano, hasta que YouTube Music no dé más
+            self.enviar("estado", f"{len(filas)} resultados · cargando el resto…")
+            vistos = {clave_fila(f) for f in filas}
+            nuevas = []
+            for r in ytm.search(texto, filter=filtro, limit=MAX_RESULTADOS):
+                f = self._normalizar(r, filtro)
+                if f and clave_fila(f) not in vistos:
+                    vistos.add(clave_fila(f))
+                    nuevas.append(f)
+            self.enviar("mas_resultados", (gen, nuevas))
         except Exception as e:
             self.enviar("estado", "Error en la búsqueda.")
             self.enviar("error", f"No se pudo buscar:\n{e}")
@@ -724,6 +749,8 @@ class App(tk.Tk):
         elif not apilar:
             self.historial.clear()
         self.vista = (titulo, filas)
+        if not apilar:
+            self.busqueda = (gen, filas)
         self._pintar_vista()
 
     def _pintar_vista(self):
@@ -736,17 +763,31 @@ class App(tk.Tk):
         self.tabla.delete(*self.tabla.get_children())
         self.resultados.clear()
         self.imagenes.clear()
-        gen = self.generacion
         for f in filas:
-            iid = self.tabla.insert("", "end", values=f["fila"])
-            self.resultados[iid] = f["datos"]
-            url = f.get("thumb")
-            if url and Image is not None:
-                if url in self.cache_img:
-                    self._poner_miniatura(gen, iid, self.cache_img[url])
-                else:
-                    self.pool_miniaturas.submit(self._descargar_miniatura, gen, iid, url)
+            self._insertar_fila(f)
         self.tabla.yview_moveto(0)
+
+    def _insertar_fila(self, f):
+        gen = self.generacion
+        iid = self.tabla.insert("", "end", values=f["fila"])
+        self.resultados[iid] = f["datos"]
+        url = f.get("thumb")
+        if url and Image is not None:
+            if url in self.cache_img:
+                self._poner_miniatura(gen, iid, self.cache_img[url])
+            else:
+                self.pool_miniaturas.submit(self._descargar_miniatura, gen, iid, url)
+
+    def _anadir_resultados(self, gen, nuevas):
+        """Añade a la búsqueda el resto de resultados que llegan en segundo plano."""
+        if not self.busqueda or self.busqueda[0] != gen:
+            return  # es de una búsqueda anterior
+        filas = self.busqueda[1]
+        filas.extend(nuevas)  # la misma lista que guarda el historial para «Volver»
+        if self.vista and self.vista[1] is filas:
+            for f in nuevas:
+                self._insertar_fila(f)
+            self.var_estado.set(f"{len(filas)} resultados.")
 
     def volver(self):
         if not self.historial or self.navegando:

@@ -74,6 +74,8 @@ Solo tendrás que hacerlo una vez.
 
 3. Pulsa **Buscar** o la tecla **Enter**.
 
+   Los primeros resultados aparecen al momento y **el resto se van añadiendo solos** a la lista mientras YouTube Music tenga más (abajo verás *«cargando el resto…»*).
+
 > 🔗 También puedes **pegar un enlace** de YouTube o YouTube Music en la barra de búsqueda y pulsar Buscar. Aparecerá en la lista, listo para descargar.
 
 ### Ver las canciones de un artista o de un álbum

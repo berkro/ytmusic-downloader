@@ -36,6 +36,11 @@ try:
 except ImportError:
     Image = ImageTk = None
 
+try:
+    import mutagen  # para poner la carátula cuadrada de YouTube Music
+except ImportError:
+    mutagen = None
+
 APP_NAME = "YT Music Descargador"
 APP_DIR = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 BIN_DIR = APP_DIR / "bin"
@@ -118,6 +123,82 @@ def url_miniatura(thumbs) -> str | None:
     return thumbs[-1].get("url")
 
 
+def portada_grande(thumbs) -> str | None:
+    """URL de la carátula cuadrada de YT Music en alta resolución (o None si solo hay
+    miniatura de vídeo, que es rectangular)."""
+    if not thumbs:
+        return None
+    url = thumbs[-1].get("url") or ""
+    if "googleusercontent.com" not in url and "ggpht.com" not in url:
+        return None
+    base = re.sub(r"=[^/=]*$", "", url) if re.search(r"=[wsh]\d+[^/=]*$", url) else url
+    return base + "=w1200-h1200-l90-rj"
+
+
+def id_de_video(url: str) -> str | None:
+    m = re.search(r"[?&]v=([\w-]{11})", url) or re.search(r"youtu\.be/([\w-]{11})", url)
+    return m.group(1) if m else None
+
+
+def id_de_lista(url: str) -> str | None:
+    m = re.search(r"[?&]list=([\w-]+)", url)
+    return m.group(1) if m else None
+
+
+def descargar_imagen_jpeg(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        datos = r.read()
+    if Image is None:
+        return datos
+    img = Image.open(io.BytesIO(datos)).convert("RGB")
+    salida = io.BytesIO()
+    img.save(salida, "JPEG", quality=92)
+    return salida.getvalue()
+
+
+def incrustar_portada(ruta: str, jpeg: bytes) -> bool:
+    """Sustituye la carátula del archivo por la imagen dada. Devuelve True si lo consigue."""
+    if mutagen is None:
+        return False
+    import base64
+    ext = Path(ruta).suffix.lower()
+    if ext == ".mp3":
+        from mutagen.id3 import APIC, ID3, ID3NoHeaderError
+        try:
+            tags = ID3(ruta)
+        except ID3NoHeaderError:
+            tags = ID3()
+        tags.delall("APIC")
+        tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=jpeg))
+        tags.save(ruta, v2_version=3)
+    elif ext in (".m4a", ".mp4"):
+        from mutagen.mp4 import MP4, MP4Cover
+        audio = MP4(ruta)
+        audio["covr"] = [MP4Cover(jpeg, imageformat=MP4Cover.FORMAT_JPEG)]
+        audio.save()
+    elif ext in (".flac", ".opus", ".ogg"):
+        from mutagen.flac import FLAC, Picture
+        pic = Picture()
+        pic.type, pic.mime, pic.desc, pic.data = 3, "image/jpeg", "Cover", jpeg
+        if Image is not None:
+            pic.width, pic.height = Image.open(io.BytesIO(jpeg)).size
+            pic.depth = 24
+        if ext == ".flac":
+            audio = FLAC(ruta)
+            audio.clear_pictures()
+            audio.add_picture(pic)
+        else:
+            from mutagen.oggopus import OggOpus
+            from mutagen.oggvorbis import OggVorbis
+            audio = OggOpus(ruta) if ext == ".opus" else OggVorbis(ruta)
+            audio["metadata_block_picture"] = [base64.b64encode(pic.write()).decode("ascii")]
+        audio.save()
+    else:
+        return False
+    return True
+
+
 def con_id(artistas) -> list:
     """Solo los artistas que tienen página propia en YT Music (enlazables)."""
     if not isinstance(artistas, list):
@@ -125,7 +206,7 @@ def con_id(artistas) -> list:
     return [a for a in artistas if a.get("id") and a.get("name")]
 
 
-def fila_cancion(t: dict, thumb=None, album=None, info=None):
+def fila_cancion(t: dict, thumb=None, album=None, info=None, portada=None):
     """Convierte una pista (de búsqueda, álbum o playlist) en una fila de la tabla."""
     if not t.get("videoId") or t.get("isAvailable") is False:
         return None
@@ -139,7 +220,8 @@ def fila_cancion(t: dict, thumb=None, album=None, info=None):
         "datos": {"tipo": "cancion", "coleccion": False, "titulo": titulo,
                   "url": f"https://music.youtube.com/watch?v={t['videoId']}",
                   "artistas": con_id(t.get("artists")),
-                  "album": alb if alb and alb.get("id") else None},
+                  "album": alb if alb and alb.get("id") else None,
+                  "portada": portada_grande(t.get("thumbnails")) or portada},
     }
 
 
@@ -617,7 +699,8 @@ class App(tk.Tk):
                     "datos": {"tipo": "album", "coleccion": True, "titulo": titulo,
                               "browseId": r["browseId"], "artista": artista,
                               "artistas": con_id(r.get("artists")),
-                              "album": {"name": titulo, "id": r["browseId"]}}}
+                              "album": {"name": titulo, "id": r["browseId"]},
+                              "portada": portada_grande(r.get("thumbnails"))}}
         # playlists
         bid = r.get("browseId") or ""
         if not bid:
@@ -776,7 +859,8 @@ class App(tk.Tk):
         for t in info.get("tracks") or []:
             n = t.get("trackNumber")
             f = fila_cancion(t, thumb=portada, album=alb,
-                             info=f"{n}. {nombre}" if n else nombre)
+                             info=f"{n}. {nombre}" if n else nombre,
+                             portada=portada_grande(info.get("thumbnails")))
             if f:
                 f["datos"]["album"] = alb
                 filas.append(f)
@@ -900,6 +984,8 @@ class App(tk.Tk):
             "-o", "pl_thumbnail:",
             "--windows-filenames",
             "--yes-playlist" if item["coleccion"] else "--no-playlist",
+            "--print", "after_move:[FILE] %(id)s %(filepath)s",
+            "--no-quiet", "--progress",
             "--newline",
             "--progress-template",
             "download:[PROG] %(progress.downloaded_bytes|0)s %(progress.total_bytes,progress.total_bytes_estimate|0)s "
@@ -950,6 +1036,7 @@ class App(tk.Tk):
                 if item["tipo"] == "album" and "url" not in item:
                     album = self._get_ytm().get_album(item["browseId"])
                     item["url"] = f"https://music.youtube.com/playlist?list={album['audioPlaylistId']}"
+                    item["portada"] = item.get("portada") or portada_grande(album.get("thumbnails"))
 
                 if accion == "formatos":
                     p = ejecutar(self.ytdlp + self._argumentos_comunes()
@@ -966,9 +1053,14 @@ class App(tk.Tk):
 
                 self.enviar("log", f"⬇ {item['titulo']}")
                 self.enviar("progreso", 0)
+                portadas = (self._portadas_ytmusic(item)
+                            if opts["metadatos"] and opts["codec"] in CON_PORTADA else {})
                 p = ejecutar(self._construir_comando(item, opts, format_id))
                 for linea in p.stdout:
-                    self._leer_salida(linea)
+                    if linea.startswith("[FILE] "):
+                        self._poner_portada_ytmusic(linea, portadas)
+                    else:
+                        self._leer_salida(linea)
                 p.wait()
                 self.enviar("progreso", 100 if p.returncode == 0 else 0)
                 self.enviar("log", f"⚠ Terminado con errores: {item['titulo']}" if p.returncode
@@ -978,6 +1070,51 @@ class App(tk.Tk):
             finally:
                 if self.cola_descargas.empty():
                     self.enviar("estado", "Listo.")
+
+    # ------------------------------------------------ carátulas de YT Music
+    def _portadas_ytmusic(self, item):
+        """{id_vídeo: url} con las carátulas cuadradas; la clave "*" vale para todas."""
+        portadas = {}
+        if item.get("portada"):
+            clave = "*" if item["coleccion"] else id_de_video(item["url"]) or "*"
+            portadas[clave] = item["portada"]
+            if item["tipo"] == "album":
+                return portadas
+        if YTMusic is None:
+            return portadas
+        try:
+            lista = id_de_lista(item["url"]) if item["coleccion"] else None
+            if lista:
+                pistas = self._get_ytm().get_playlist(lista, limit=None).get("tracks") or []
+                for t in pistas:
+                    url = portada_grande(t.get("thumbnails"))
+                    if t.get("videoId") and url:
+                        portadas[t["videoId"]] = url
+            elif not item["coleccion"] and not portadas:
+                vid = id_de_video(item["url"])
+                if vid:
+                    pistas = self._get_ytm().get_watch_playlist(videoId=vid, limit=1).get("tracks") or []
+                    if pistas:
+                        url = portada_grande(pistas[0].get("thumbnail") or pistas[0].get("thumbnails"))
+                        if url:
+                            portadas[vid] = url
+        except Exception:
+            pass  # sin carátula de YT Music: se queda la del vídeo
+        return portadas
+
+    def _poner_portada_ytmusic(self, linea, portadas):
+        try:
+            vid, ruta = linea.rstrip("\r\n")[7:].split(" ", 1)
+        except ValueError:
+            return
+        url = portadas.get(vid) or portadas.get("*")
+        if not url:
+            return
+        try:
+            if incrustar_portada(ruta, descargar_imagen_jpeg(url)):
+                self.enviar("log", f"[Carátula] Carátula de YouTube Music en «{Path(ruta).name}»")
+        except Exception as e:
+            self.enviar("log", f"⚠ No se pudo poner la carátula de YT Music ({e}); se deja la del vídeo.")
 
     # -------------------------------------------------------- actualizaciones
     def actualizar_ytdlp(self):

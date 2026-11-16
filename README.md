@@ -112,8 +112,8 @@ Pulsa **Abrir carpeta** para ver tus canciones.
 
 ### Otras opciones
 
-- **Metadatos y portada:** guarda dentro del archivo el título, artista, álbum y la carátula. Déjalo activado.
-- **Portada cuadrada:** recorta la carátula para que quede cuadrada, como en YouTube Music. Déjalo activado.
+- **Metadatos y portada:** guarda dentro del archivo el título, artista, álbum y la carátula. Se usa la **carátula oficial de YouTube Music** (la misma que ves en la app); si una canción no la tiene, se usa la imagen del vídeo. Déjalo activado.
+- **Portada cuadrada:** solo se nota cuando no hay carátula de YouTube Music: recorta la imagen del vídeo para que quede cuadrada. Déjalo activado.
 - **Carpeta:** dónde se guardan las descargas. Pulsa **Cambiar…** para elegir otra.
 
 La app recuerda todas estas opciones para la próxima vez.
@@ -221,7 +221,7 @@ La app busca `yt-dlp`, `ffmpeg` y `deno` primero en una carpeta `bin` junto al s
 
 Cada vez que se sube un cambio a la rama `main`, [GitHub Actions](.github/workflows/compilar.yml) hace esto automáticamente:
 
-1. Empaqueta la app con **PyInstaller** (incluye Python, ytmusicapi y Pillow).
+1. Empaqueta la app con **PyInstaller** (incluye Python, ytmusicapi, Pillow y Mutagen).
 2. Descarga las últimas versiones oficiales de **yt-dlp.exe**, **ffmpeg** ([yt-dlp/FFmpeg-Builds](https://github.com/yt-dlp/FFmpeg-Builds)) y **deno** en la carpeta `bin`.
 3. Comprueba que todo arranca.
 4. Lo comprime y lo publica en **Releases** como «Última versión».
@@ -235,6 +235,7 @@ También se puede lanzar a mano desde la pestaña **Actions** → *Compilar para
 - [FFmpeg](https://ffmpeg.org/): procesado de audio
 - [Deno](https://deno.com/): motor de JavaScript que necesita yt-dlp
 - [Pillow](https://python-pillow.org/): portadas en la lista
+- [Mutagen](https://github.com/quodlibet/mutagen): carátulas dentro de los archivos
 
 ---
 
